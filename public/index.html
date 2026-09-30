@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karya Kram – events, venues, tickets</title>
+<style>
+:root{--bg:#f3f5f1;--ink:#17231d;--mute:#5d6b63;--line:#d5dcd3;--card:#fff;--brand:#1f5c46;--pop:#e8b923}
+@media(prefers-color-scheme:dark){:root{--bg:#121a16;--ink:#e8efe9;--mute:#93a399;--line:#2a3830;--card:#19241f;--brand:#5fbf98;--pop:#e8b923}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Georgia,'Times New Roman',serif}
+h1,h2,h3,button,input,select,nav a,label,.sans{font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:22px;letter-spacing:-.02em}
+nav{display:flex;gap:4px;flex-wrap:wrap}
+nav a{padding:6px 12px;border-radius:6px;cursor:pointer;color:var(--mute);font-size:14px}
+nav a.on{background:var(--brand);color:#fff}
+main{max-width:920px;margin:0 auto;padding:20px}
+h2{font-size:20px;margin:0 0 12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px}
+.card h3{margin:0 0 4px;font-size:17px}
+.mute{color:var(--mute);font-size:14px}
+input,select{width:100%;padding:9px;margin:4px 0 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-size:15px}
+label{font-size:13px;color:var(--mute)}
+button{padding:8px 14px;border:0;border-radius:6px;background:var(--brand);color:#fff;font-size:14px;cursor:pointer}
+button.alt{background:transparent;color:var(--brand);border:1px solid var(--brand)}
+button:focus-visible,input:focus-visible,select:focus-visible,nav a:focus-visible{outline:2px solid var(--pop);outline-offset:2px}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;background:var(--line)}
+.tag.ok{background:var(--brand);color:#fff}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.form{max-width:420px}
+#msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:8px;background:var(--ink);color:var(--bg);display:none;font-family:system-ui;max-width:90%}
+.ticket{border:2px dashed var(--brand);border-radius:10px;padding:16px;background:var(--card);position:relative}
+.ticket .code{font:700 22px ui-monospace,monospace;letter-spacing:.06em;color:var(--brand)}
+dialog{border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);max-width:420px;width:92%}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+table{width:100%;border-collapse:collapse;font:14px system-ui,sans-serif}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Karya Kram</h1>
+  <nav id="nav"></nav>
+  <span id="who" class="mute sans"></span>
+</header>
+<main id="app"></main>
+<div id="msg" role="status"></div>
+
+<dialog id="pay">
+  <h3 style="margin-top:0" class="sans">Test payment</h3>
+  <p class="mute" id="payInfo"></p>
+  <label>Card number</label>
+  <input id="card" value="4242 4242 4242 4242" inputmode="numeric">
+  <p class="mute">Demo gateway: any card works. A card ending in 0000 is declined.</p>
+  <div class="row"><button id="payGo">Pay now</button><button class="alt" id="payX">Cancel</button></div>
+</dialog>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let S = { token: localStorage.t || '', user: JSON.parse(localStorage.u || 'null'), tab: 'events' };
+const money = (n) => '₹' + Number(n).toLocaleString('en-IN');
+const fmt = (d) => new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function toast(t) { const m = $('#msg'); m.textContent = t; m.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => (m.style.display = 'none'), 3500); }
+async function api(path, method = 'GET', body) {
+  const r = await fetch('/api' + path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token }, body: body && JSON.stringify(body) });
+  const d = await r.json();
+  if (!r.ok) { if (r.status === 401 && S.token) logout(); throw new Error(d.error || 'Something went wrong'); }
+  return d;
+}
+function logout() { localStorage.clear(); S.token = ''; S.user = null; render(); }
+const go = (t) => { S.tab = t; render(); };
+
+function payDialog(info) {
+  return new Promise((res) => {
+    const d = $('#pay'); $('#payInfo').textContent = info; d.showModal();
+    $('#payGo').onclick = () => { d.close(); res($('#card').value); };
+    $('#payX').onclick = () => { d.close(); res(null); };
+  });
+}
+async function safe(fn) { try { await fn(); } catch (e) { toast(e.message); } }
+
+function ticketHtml(a) {
+  return `<div class="ticket"><span class="tag ok">${a.role === 'sponsor' ? 'Organiser' : 'Participant'}</span>
+  <div class="code">${esc(a.ticketCode)}</div><h3>${esc(a.event)}</h3>
+  <div class="mute">${fmt(a.date)} · ${esc(a.venue)}</div>
+  <div class="mute">${esc(a.issuedTo)} — paid ${money(a.amountPaid)} (${esc(a.transactionId)})</div>
+  <p>${esc(a.message)}</p></div>`;
+}
+function showAck(a) { $('#app').innerHTML = `<h2>Booking confirmed</h2>${ticketHtml(a)}<div class="row"><button onclick="go('tickets')">My tickets</button><button class="alt" onclick="go('events')">Browse events</button></div>`; }
+
+const views = {
+  async auth() {
+    if (S.temp) return `<div class="form card"><h2>Enter your 6-digit code</h2>
+    <p class="mute">Two-step check for ${esc(S.temp.email)}. The code is valid for 5 minutes.</p>
+    ${S.temp.demoOtp ? `<p><span class="tag ok">Demo code: ${esc(S.temp.demoOtp)}</span></p>` : ''}
+    <label>Code</label><input id="otp" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+    <div class="row"><button id="vf">Verify</button><button class="alt" id="bk">Back</button></div></div>`;
+    return `<div class="form card"><h2>Log in or create an account</h2>
+    <label>Name (new accounts only)</label><input id="n"><label>Email</label><input id="e" type="email"><label>Password</label><input id="p" type="password">
+    <label>Account type (new accounts only)</label><select id="r"><option value="participant">Participant: attend events</option><option value="user">User: list venues and sponsor events</option></select>
+    <div class="row"><button id="li">Log in</button><button class="alt" id="su">Sign up</button></div>
+    <p class="mute">Demo logins: admin@demo.com / admin123, organizer@demo.com / demo123, participant@demo.com / demo123</p></div>`;
+  },
+  async events() {
+    const list = await api('/events');
+    return `<h2>Upcoming events</h2><div class="grid">${list.map((e) => `<div class="card"><h3>${esc(e.title)}</h3>
+    <div class="mute">${fmt(e.date)} · ${esc(e.venue?.name)}, ${esc(e.venue?.city)}</div><p>${esc(e.description)}</p>
+    <div class="mute">By ${esc(e.organizer?.name)} · ${e.seats - e.sold} of ${e.seats} seats left</div>
+    ${S.user.role === 'participant' ? `<div class="row"><button data-join="${e._id}" data-price="${e.ticketPrice}" ${e.sold >= e.seats ? 'disabled' : ''}>Buy ticket · ${money(e.ticketPrice)}</button></div>` : `<div class="mute">Ticket price ${money(e.ticketPrice)}</div>`}</div>`).join('') || '<p class="mute">No events are open yet. Sponsor one from the Venues tab.</p>'}</div>`;
+  },
+  async venues() {
+    const list = await api('/venues');
+    return `<h2>Venues</h2><div class="grid">${list.map((v) => `<div class="card"><h3>${esc(v.name)}</h3>
+    <div class="mute">${esc(v.city)} · up to ${v.capacity} people</div>
+    <div>Booking amount ${money(v.bookingAmount)} <span class="tag ${v.status === 'approved' ? 'ok' : ''}">${v.status}</span></div>
+    <div class="row">${v.status === 'approved' && S.user.role === 'user' ? `<button data-sponsor="${v._id}" data-cap="${v.capacity}" data-amt="${v.bookingAmount}">Sponsor an event here</button>` : ''}
+    ${S.user.role === 'admin' && v.status === 'pending' ? `<button data-st="approved" data-id="${v._id}">Approve</button><button class="alt" data-st="rejected" data-id="${v._id}">Reject</button>` : ''}</div></div>`).join('')}</div>
+    <h2 style="margin-top:28px">List a free area</h2><div class="form card">
+    <label>Name</label><input id="vn"><label>City</label><input id="vc"><label>Address</label><input id="va">
+    <label>Capacity</label><input id="vcap" type="number"><label>Booking amount (₹, full price for one day)</label><input id="vamt" type="number">
+    <button id="addV">Submit for approval</button></div>`;
+  },
+  async mine() {
+    const list = await api('/events/mine');
+    return `<h2>Events I organise</h2><div class="grid">${list.map((e) => `<div class="card"><h3>${esc(e.title)}</h3>
+    <div class="mute">${fmt(e.date)} · ${esc(e.venue?.name)}</div>
+    <div>${e.sold}/${e.seats} tickets sold · <span class="tag ${e.status === 'confirmed' ? 'ok' : ''}">${e.status.replace('_', ' ')}</span></div>
+    ${e.status === 'awaiting_payment' ? `<div class="row"><button data-spay="${e._id}" data-amt="${e.sponsorAmount}">Pay 50% · ${money(e.sponsorAmount)}</button></div>` : ''}</div>`).join('') || '<p class="mute">Nothing yet. Pick a venue and choose "Sponsor an event here".</p>'}</div>`;
+  },
+  async tickets() {
+    const list = await api('/tickets/mine');
+    return `<h2>My tickets</h2><div class="grid">${list.map(ticketHtml).join('') || '<p class="mute">No tickets yet.</p>'}</div>`;
+  },
+  async admin() {
+    const [s, evs, users] = await Promise.all([api('/admin/stats'), api('/admin/events'), api('/admin/users')]);
+    return `<h2>Admin overview</h2><div class="grid">
+    ${[['Users', s.users], ['Venues', s.venues], ['Live events', s.events], ['Tickets', s.tickets], ['Sponsor income', money(s.revenue.sponsor || 0)], ['Ticket sales', money(s.revenue.participant || 0)]]
+      .map(([k, v]) => `<div class="card"><div class="mute">${k}</div><h3>${v}</h3></div>`).join('')}</div>
+    <h2 style="margin-top:28px">All events</h2>
+    <div style="overflow-x:auto"><table><tr><th>Event</th><th>Date</th><th>Venue</th><th>Organiser</th><th>Sold</th><th>Status</th></tr>
+    ${evs.map((e) => `<tr><td>${esc(e.title)}</td><td>${fmt(e.date)}</td><td>${esc(e.venue?.name)}</td><td>${esc(e.organizer?.name)}</td><td>${e.sold}/${e.seats}</td><td><span class="tag ${e.status === 'confirmed' ? 'ok' : ''}">${e.status.replace('_', ' ')}</span></td></tr>`).join('')}</table></div>
+    <h2 style="margin-top:28px">Users</h2>
+    <div style="overflow-x:auto"><table><tr><th>Name</th><th>Email</th><th>Role</th></tr>
+    ${users.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${esc(u.role)}</td></tr>`).join('')}</table></div>
+    <p class="mute">Approve new venues from the Venues tab.</p>`;
+  },
+};
+
+function bind() {
+  const on = (s, fn) => { const el = $(s); if (el) el.onclick = fn; };
+  const auth = (path) => () => safe(async () => {
+    const email = $('#e').value;
+    const d = await api(path, 'POST', { name: $('#n').value, email, password: $('#p').value, role: $('#r').value });
+    S.temp = { tempToken: d.tempToken, demoOtp: d.demoOtp, email }; render();
+  });
+  on('#li', auth('/login')); on('#su', auth('/register'));
+  on('#bk', () => { S.temp = null; render(); });
+  on('#vf', () => safe(async () => {
+    const d = await api('/verify-otp', 'POST', { tempToken: S.temp.tempToken, code: $('#otp').value });
+    S.token = d.token; S.user = d.user; S.temp = null; localStorage.t = d.token; localStorage.u = JSON.stringify(d.user);
+    S.tab = d.user.role === 'admin' ? 'admin' : 'events'; render();
+  }));
+  on('#addV', () => safe(async () => {
+    await api('/venues', 'POST', { name: $('#vn').value, city: $('#vc').value, address: $('#va').value, capacity: +$('#vcap').value, bookingAmount: +$('#vamt').value });
+    toast('Venue submitted'); render();
+  }));
+  document.querySelectorAll('[data-join]').forEach((b) => b.onclick = () => safe(async () => {
+    const card = await payDialog('Full ticket price ' + money(b.dataset.price)); if (!card) return;
+    showAck(await api(`/events/${b.dataset.join}/join`, 'POST', { cardNumber: card }));
+  }));
+  document.querySelectorAll('[data-spay]').forEach((b) => b.onclick = () => safe(async () => {
+    const card = await payDialog('Sponsor payment (50%) ' + money(b.dataset.amt)); if (!card) return;
+    showAck(await api(`/events/${b.dataset.spay}/sponsor-pay`, 'POST', { cardNumber: card }));
+  }));
+  document.querySelectorAll('[data-st]').forEach((b) => b.onclick = () => safe(async () => { await api(`/venues/${b.dataset.id}/status`, 'PATCH', { status: b.dataset.st }); render(); }));
+  document.querySelectorAll('[data-sponsor]').forEach((b) => b.onclick = () => {
+    const cap = b.dataset.cap, half = b.dataset.amt / 2;
+    $('#app').innerHTML = `<div class="form card"><h2>Sponsor an event</h2>
+    <p class="mute">You pay 50% (${money(half)}) to book this venue and become the organiser. Participants pay the full ticket price.</p>
+    <label>Event title</label><input id="et"><label>Description</label><input id="ed"><label>Date</label><input id="edt" type="date">
+    <label>Ticket price (₹)</label><input id="ep" type="number"><label>Seats (max ${cap})</label><input id="es" type="number">
+    <button id="mk">Create event</button></div>`;
+    $('#mk').onclick = () => safe(async () => {
+      await api('/events', 'POST', { venueId: b.dataset.sponsor, title: $('#et').value, description: $('#ed').value, date: $('#edt').value, ticketPrice: +$('#ep').value, seats: +$('#es').value });
+      toast('Event created. Pay the 50% to confirm it.'); go('mine');
+    });
+  });
+}
+
+async function render() {
+  const nav = $('#nav');
+  if (!S.token) { nav.innerHTML = ''; $('#who').textContent = ''; $('#app').innerHTML = await views.auth(); return bind(); }
+  const R = S.user.role;
+  const tabs = R === 'admin' ? [['admin', 'Overview'], ['venues', 'Venues'], ['events', 'Events']]
+    : R === 'user' ? [['events', 'Events'], ['venues', 'Venues'], ['mine', 'My events'], ['tickets', 'My tickets']]
+    : [['events', 'Events'], ['tickets', 'My tickets']];
+  if (!tabs.some(([k]) => k === S.tab)) S.tab = tabs[0][0];
+  nav.innerHTML = tabs.map(([k, l]) => `<a tabindex="0" class="${S.tab === k ? 'on' : ''}" data-tab="${k}">${l}</a>`).join('');
+  nav.querySelectorAll('a').forEach((a) => { a.onclick = () => go(a.dataset.tab); a.onkeydown = (e) => e.key === 'Enter' && go(a.dataset.tab); });
+  $('#who').innerHTML = `${esc(S.user.name)} (${R}) · <a href="#" id="lo">Log out</a>`; $('#lo').onclick = (e) => { e.preventDefault(); logout(); };
+  await safe(async () => { $('#app').innerHTML = await views[S.tab](); bind(); });
+}
+render();
+</script>
+</body>
+</html>
